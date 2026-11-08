@@ -30,6 +30,8 @@ RUN --mount=type=cache,id=nuget,target=/root/.nuget/packages \
 FROM mcr.microsoft.com/dotnet/runtime-deps:10.0-noble-chiseled-extra AS migrator
 WORKDIR /app
 COPY --from=bundle --chown=$APP_UID:$APP_UID /efbundle ./efbundle
+# The bundle unpacks itself on start; /tmp is the only writable place in the cluster (read-only root filesystem)
+ENV DOTNET_BUNDLE_EXTRACT_BASE_DIR=/tmp
 USER $APP_UID
 ENTRYPOINT ["./efbundle"]
 
