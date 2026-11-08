@@ -1,0 +1,49 @@
+name: dora
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"                # Monday mornings
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  deployments: read
+  issues: read
+
+jobs:
+  report:
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Calculate the last 7 days for prod
+        run: |
+          SINCE=$(date -u -d '7 days ago' +%Y-%m-%dT%H:%M:%SZ)
+          deployments=$(gh api "repos/$GITHUB_REPOSITORY/deployments?environment=prod&per_page=100" \
+            --jq "[.[] | select(.created_at >= \"$SINCE\")]")
+          total=$(jq length <<<"$deployments")
+          failed=0
+          lead_seconds=0
+          for id in $(jq -r '.[].id' <<<"$deployments"); do
+            d=$(jq -c ".[] | select(.id == $id)" <<<"$deployments")
+            state=$(gh api "repos/$GITHUB_REPOSITORY/deployments/$id/statuses" --jq '.[0].state')
+            if [[ "$state" == "failure" || "$state" == "error" ]]; then failed=$((failed + 1)); fi
+            committed=$(gh api "repos/$GITHUB_REPOSITORY/commits/$(jq -r .sha <<<"$d")" --jq .commit.author.date)
+            deployed=$(jq -r .created_at <<<"$d")
+            lead_seconds=$((lead_seconds + $(date -d "$deployed" +%s) - $(date -d "$committed" +%s)))
+          done
+
+          incidents=$(gh issue list --repo "$GITHUB_REPOSITORY" --label incident --state closed --limit 100 \
+            --search "closed:>=${SINCE%%T*}" --json createdAt,closedAt)
+          n_inc=$(jq length <<<"$incidents")
+          restore_min=$(jq '[.[] | ((.closedAt | fromdate) - (.createdAt | fromdate))] | if length > 0 then (add / length / 60 | floor) else 0 end' <<<"$incidents")
+
+          {
+            echo "## DORA metrics: prod, last 7 days"
+            echo "| Metric | Value |"
+            echo "| --- | --- |"
+            echo "| Deployment frequency | $total deployments |"
+            echo "| Lead time for changes (average) | $(( total > 0 ? lead_seconds / total / 3600 : 0 )) hours |"
+            echo "| Change failure rate | $(( total > 0 ? 100 * failed / total : 0 ))% |"
+            echo "| Time to restore (average, $n_inc incidents) | $restore_min minutes |"
+          } >> "$GITHUB_STEP_SUMMARY"

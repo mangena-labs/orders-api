@@ -1,0 +1,5 @@
+# values-staging.yaml: same shape as prod, smaller
+environment: staging
+autoscaling:
+  minReplicas: 2
+  maxReplicas: 4

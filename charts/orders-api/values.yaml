@@ -1,0 +1,42 @@
+# values.yaml: defaults shared by every environment
+image:
+  repository: acrmangenashared.azurecr.io/orders-api
+  tag: ""                       # always set by the pipeline to the commit SHA
+migrator:
+  repository: acrmangenashared.azurecr.io/orders-migrator
+
+identity:                       # set by the pipeline from GitHub environment variables
+  apiClientId: ""
+  migratorClientId: ""
+
+gateway:                        # the platform team's shared Gateway (Stage 3)
+  name: edge
+  namespace: envoy-gateway-system
+  sectionName: https
+  hostname: ""                  # origin-<env>.mangena.online, set by the pipeline
+frontDoorId: ""                 # only requests carrying this X-Azure-FDID are accepted (empty = no Front Door, learning profile)
+environment: ""                 # dev / staging / prod, set in each values-<env>.yaml
+
+config:
+  keyVaultUri: ""
+  sqlServer: ""
+  sqlDatabase: sqldb-orders
+  logLevel: Information
+
+replicaCount: 2                 # used only when autoscaling is off
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 4
+  targetCPU: 70
+
+pdb:
+  enabled: true
+  minAvailable: 1
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 256Mi
+  limits:
+    memory: 512Mi               # no CPU limit on purpose (avoids throttling)

@@ -1,0 +1,181 @@
+name: delivery
+
+on:
+  pull_request:
+    branches: [main]                   # no paths filter: build-test and image are required checks
+  push:
+    branches: [main]
+
+permissions:
+  contents: read                       # every job starts read-only and widens only what it needs
+
+concurrency:
+  group: delivery-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}   # never cancel a main-branch deploy
+
+env:
+  REGISTRY: ${{ vars.ACR_NAME }}.azurecr.io
+
+jobs:
+  build-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/dotnet-build
+
+      - name: Formatting
+        run: dotnet format --verify-no-changes --no-restore
+
+      - name: Unit and integration tests
+        run: >
+          dotnet test --no-build -c Release
+          --filter "Category!=Deployed"
+          --collect:"XPlat Code Coverage" --results-directory TestResults
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()                   # keep the evidence, especially when tests fail
+        with:
+          name: test-results
+          path: TestResults
+
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v4.3.1
+      - name: Chart renders for every environment
+        run: |
+          for env in dev staging prod; do
+            helm lint charts/orders-api -f charts/orders-api/values-$env.yaml \
+              --set image.tag=ci,identity.apiClientId=ci,identity.migratorClientId=ci \
+              --set gateway.hostname=origin-$env.mangena.online,frontDoorId=ci \
+              --set config.keyVaultUri=https://ci.vault.azure.net/,config.sqlServer=ci
+          done
+
+      - name: Block vulnerable new dependencies
+        if: github.event_name == 'pull_request'
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: high
+
+  image:
+    needs: build-test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write                  # OIDC login to Azure (push only)
+      attestations: write              # signed build records
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: meta
+        run: echo "tag=${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"   # image tag = commit SHA
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Build the API image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          target: final
+          tags: ${{ env.REGISTRY }}/orders-api:${{ steps.meta.outputs.tag }}
+          load: true                   # keep locally for scanning; push comes later
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Build the migrator image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          target: migrator
+          tags: ${{ env.REGISTRY }}/orders-migrator:${{ steps.meta.outputs.tag }}
+          load: true
+          cache-from: type=gha
+
+      - name: Scan the API image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.REGISTRY }}/orders-api:${{ steps.meta.outputs.tag }}
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+      - name: Scan the migrator image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.REGISTRY }}/orders-migrator:${{ steps.meta.outputs.tag }}
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+      # ---- everything below runs only after a merge ----
+      - name: Azure login (identity with AcrPush only)
+        if: github.event_name == 'push'
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ vars.ACR_PUSH_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.SHARED_SUBSCRIPTION_ID }}
+
+      - name: Push both images
+        if: github.event_name == 'push'
+        id: push
+        env:
+          TAG: ${{ steps.meta.outputs.tag }}
+          ACR_NAME: ${{ vars.ACR_NAME }}
+        run: |
+          az acr login --name "$ACR_NAME"
+          for image in orders-migrator orders-api; do
+            docker push "$REGISTRY/$image:$TAG"
+            digest=$(docker inspect --format='{{index .RepoDigests 0}}' "$REGISTRY/$image:$TAG" | cut -d@ -f2)
+            echo "${image//-/_}_digest=$digest" >> "$GITHUB_OUTPUT"
+          done
+
+      - name: Attest the API image (who built it, from which commit)
+        if: github.event_name == 'push'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.REGISTRY }}/orders-api
+          subject-digest: ${{ steps.push.outputs.orders_api_digest }}
+          push-to-registry: true
+      - name: Attest the migrator image
+        if: github.event_name == 'push'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.REGISTRY }}/orders-migrator
+          subject-digest: ${{ steps.push.outputs.orders_migrator_digest }}
+          push-to-registry: true
+
+  deploy-dev:
+    if: github.event_name == 'push'
+    needs: image
+    permissions:
+      contents: read
+      id-token: write
+      attestations: read
+    uses: ./.github/workflows/_deploy.yml
+    with:
+      environment: dev
+      tag: ${{ needs.image.outputs.tag }}
+
+  deploy-staging:
+    needs: [image, deploy-dev]
+    permissions:
+      contents: read
+      id-token: write
+      attestations: read
+    uses: ./.github/workflows/_deploy.yml
+    with:
+      environment: staging
+      tag: ${{ needs.image.outputs.tag }}
+      run_deployed_tests: true
+
+  deploy-prod:
+    if: vars.PROD_ENABLED == 'true'      # set by bootstrap; false in the learning profile
+    needs: [image, deploy-staging]
+    permissions:
+      contents: read
+      id-token: write
+      attestations: read
+    uses: ./.github/workflows/_deploy.yml
+    with:
+      environment: prod
+      tag: ${{ needs.image.outputs.tag }}

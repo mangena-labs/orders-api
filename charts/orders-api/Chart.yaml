@@ -1,0 +1,6 @@
+# Chart.yaml
+apiVersion: v2
+name: orders-api
+description: Mangena Orders API
+type: application
+version: 1.0.0

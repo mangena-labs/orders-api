@@ -1,0 +1,14 @@
+name: dotnet-build
+description: Set up .NET from global.json, restore exactly the locked packages, build in Release
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+      with:
+        global-json-file: global.json
+        cache: true
+        cache-dependency-path: "**/packages.lock.json"
+    - run: dotnet restore --locked-mode
+      shell: bash
+    - run: dotnet build --no-restore -c Release -warnaserror
+      shell: bash

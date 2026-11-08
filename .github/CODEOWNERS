@@ -1,0 +1,5 @@
+# .github/CODEOWNERS
+*                    @mangena-labs/orders-devs
+/charts/             @mangena-labs/orders-devs @mangena-labs/platform-team
+/Dockerfile          @mangena-labs/orders-devs @mangena-labs/platform-team
+/.github/            @mangena-labs/platform-team

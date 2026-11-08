@@ -1,0 +1,105 @@
+name: deploy-environment
+
+on:
+  workflow_call:
+    inputs:
+      environment:        { type: string,  required: true }
+      tag:                { type: string,  required: true }
+      run_deployed_tests: { type: boolean, default: false }
+
+jobs:
+  deploy:
+    # Private networking: the hub runners (they can reach the private AKS API). Learning profile: a normal runner.
+    runs-on: ${{ vars.PRIVATE_RUNNERS == 'true' && fromJSON('{"group":"azure-private"}') || 'ubuntu-24.04' }}
+    timeout-minutes: 30
+    environment:
+      name: ${{ inputs.environment }}   # prod pauses here for orders-approvers
+      url: https://${{ vars.API_HOST }}
+    permissions:
+      contents: read
+      id-token: write
+      attestations: read                # gh attestation verify reads the signed build records
+    concurrency:
+      group: deploy-orders-${{ inputs.environment }}
+      cancel-in-progress: false
+    env:                                # everything below comes from Stage 4's published variables
+      TAG: ${{ inputs.tag }}
+      ENVIRONMENT: ${{ inputs.environment }}
+      REGISTRY: ${{ vars.ACR_NAME }}.azurecr.io
+      ACR_NAME: ${{ vars.ACR_NAME }}
+      AKS_NAME: ${{ vars.AKS_NAME }}
+      AKS_RG: ${{ vars.AKS_RESOURCE_GROUP }}
+      API_HOST: ${{ vars.API_HOST }}
+      ORIGIN_HOST: ${{ vars.ORIGIN_HOST }}
+      API_CLIENT_ID: ${{ vars.ORDERS_API_CLIENT_ID }}
+      MIGRATOR_CLIENT_ID: ${{ vars.ORDERS_MIGRATOR_CLIENT_ID }}
+      FRONT_DOOR_ID: ${{ vars.FRONT_DOOR_ID }}
+      KEY_VAULT_URI: ${{ vars.KEY_VAULT_URI }}
+      SQL_SERVER: ${{ vars.SQL_SERVER_FQDN }}
+      SQL_DATABASE: ${{ vars.SQL_DATABASE }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Azure login (this environment's deploy identity)
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ vars.DEPLOY_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Verify both images were built by this repository's pipeline
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          az acr login --name "$ACR_NAME"
+          gh attestation verify "oci://$REGISTRY/orders-api:$TAG" --repo "$GITHUB_REPOSITORY"
+          gh attestation verify "oci://$REGISTRY/orders-migrator:$TAG" --repo "$GITHUB_REPOSITORY"
+
+      - name: Connect to the cluster with an Entra token
+        run: |
+          sudo az aks install-cli
+          az aks get-credentials -g "$AKS_RG" -n "$AKS_NAME" --overwrite-existing
+          kubelogin convert-kubeconfig -l azurecli
+
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v4.3.1
+
+      - name: Deploy (automatic rollback if anything fails)
+        id: helm
+        run: |
+          helm upgrade --install orders-api charts/orders-api \
+            --namespace orders \
+            -f charts/orders-api/values.yaml \
+            -f "charts/orders-api/values-$ENVIRONMENT.yaml" \
+            --set image.tag="$TAG" \
+            --set identity.apiClientId="$API_CLIENT_ID" \
+            --set identity.migratorClientId="$MIGRATOR_CLIENT_ID" \
+            --set gateway.hostname="$ORIGIN_HOST" \
+            --set frontDoorId="$FRONT_DOOR_ID" \
+            --set config.keyVaultUri="$KEY_VAULT_URI" \
+            --set config.sqlServer="$SQL_SERVER" \
+            --set config.sqlDatabase="$SQL_DATABASE" \
+            --rollback-on-failure --wait=watcher --timeout 10m --history-max 10   # Helm 4 names
+
+      - name: Smoke test through the public address
+        run: |
+          for _ in $(seq 1 20); do
+            if curl -fsS "https://$API_HOST/health/ready"; then exit 0; fi
+            sleep 15
+          done
+          echo "::error::Smoke test failed"; exit 1
+
+      - name: Roll back if the smoke test failed
+        if: failure() && steps.helm.outcome == 'success'
+        run: helm rollback orders-api 0 --namespace orders --wait=watcher   # 0 = the previous revision
+
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        if: inputs.run_deployed_tests
+        with:
+          global-json-file: global.json
+      - name: End-to-end tests against the deployed API
+        if: inputs.run_deployed_tests
+        env:
+          API_BASE_URL: https://${{ vars.API_HOST }}
+        run: dotnet test tests/Orders.IntegrationTests -c Release --filter "Category=Deployed"
