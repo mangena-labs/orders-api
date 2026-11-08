@@ -1,0 +1,9 @@
+<!-- Orders.Infrastructure.csproj -->
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Orders.Domain\Orders.Domain.csproj" />
+  </ItemGroup>
+</Project>

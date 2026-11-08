@@ -1,0 +1,11 @@
+<!-- Directory.Build.props: applies to every project in the repo -->
+<Project>
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AnalysisLevel>latest</AnalysisLevel>   <!-- raise to latest-recommended once the build is clean -->
+    <!-- Records exact package versions in packages.lock.json, so CI restores exactly the same thing -->
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+  </PropertyGroup>
+</Project>

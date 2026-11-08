@@ -1,0 +1,7 @@
+# .gitleaks.toml (orders-api)
+[extend]
+useDefault = true            # keep every built-in rule
+
+[allowlist]
+description = "Sample values for local development only"
+paths = ['''\.env\.example$''']

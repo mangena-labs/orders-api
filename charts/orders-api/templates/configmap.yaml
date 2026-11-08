@@ -1,0 +1,11 @@
+# templates/configmap.yaml: non-secret settings, as environment variables
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: orders-api-config
+  labels:
+    {{- include "orders-api.labels" . | nindent 4 }}
+data:
+  KeyVault__Uri: {{ required "config.keyVaultUri is required" .Values.config.keyVaultUri | quote }}
+  ConnectionStrings__Orders: {{ include "orders-api.connectionString" . | quote }}
+  Logging__LogLevel__Default: {{ .Values.config.logLevel | quote }}

@@ -1,0 +1,9 @@
+# values-dev.yaml: small and cheap
+environment: dev
+autoscaling:
+  minReplicas: 1
+  maxReplicas: 2
+pdb:
+  enabled: false                # one replica + a PDB would block node upgrades
+config:
+  logLevel: Debug

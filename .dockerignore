@@ -1,0 +1,12 @@
+# .dockerignore
+**/bin/
+**/obj/
+**/.vs/
+**/TestResults/
+.git/
+.github/
+charts/
+tests/
+**/*.user
+.env
+compose.yaml

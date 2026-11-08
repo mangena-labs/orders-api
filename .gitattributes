@@ -1,0 +1,4 @@
+# .gitattributes: stops Windows line endings breaking bash scripts in the pipeline
+* text=auto eol=lf
+*.sh text eol=lf
+*.pem binary
