@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 
 ############ build: compile with the full SDK ############
-FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+FROM mcr.microsoft.com/dotnet/sdk:11.0 AS build
 WORKDIR /src
 
 # Restore first, using only the files that describe dependencies (cached until they change)
